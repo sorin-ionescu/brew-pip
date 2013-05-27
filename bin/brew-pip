@@ -40,16 +40,13 @@ f = open(filename, 'w')
 formula_contents = """
 require 'formula'
 
+class PipDownloadStrategy < AbstractDownloadStrategy
+  def fetch; Pathname.new ''; end
+  def stage; Pathname.new ''; end
+  def cached_location; Pathname.new ''; end
+end
+
 class PipFormula < Formula
-  class NoopDownloadStrategy < AbstractDownloadStrategy
-    def fetch; end
-    def stage; end
-  end
-
-  def download_strategy
-    NoopDownloadStrategy
-  end
-
   def install
     system "pip", "install", "#{name}==#{version}",
       "--install-option=--prefix=#{prefix}"
@@ -57,7 +54,7 @@ class PipFormula < Formula
 end
 
 class %(klass)s < PipFormula
-  url "%(url)s"
+  url "%(url)s", :using => PipDownloadStrategy
   version "%(version)s"
   homepage "%(homepage)s"
   env :userpaths
