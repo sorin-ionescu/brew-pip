@@ -6,70 +6,147 @@ import tempfile
 import xmlrpclib
 import re
 
-argv = sys.argv
-if len(argv) < 2:
-    sys.stderr.write("Please specify a package name (e.g. brew pip <name>)\n")
-    exit(1)
+
+if __name__ != '__main__':
+    raise ImportError('File is executable: {0}'.format(__file__))
 
 
-verbose = False
-if "-v" in argv:
-    argv.remove("-v")
-    verbose = True
-elif "--version" in argv:
-    argv.remove("--version")
-    verbose = True
+def abort(msg):
+    sys.stderr.write(msg)
+    sys.exit(1)
 
 
 client = xmlrpclib.ServerProxy('http://pypi.python.org/pypi')
+name = None
+url = None
+homepage = None
+version = None
+options = []
+packages = []
 
-releases = client.package_releases(argv[1])
+for arg in sys.argv[1:]:
+    if re.match('^-{1,2}[A-Za-z0-9]+', arg):
+        options.append(arg)
+        continue
 
-if len(releases) == 0:
-    sys.stderr.write("Could not find a valid package '%s'\n" % argv[1])
-    exit(1)
+    try:
+        releases = client.package_releases(arg)
+    except:
+        abort("Error: Cannot get package releases: {0}\n".format(arg))
+    if len(releases) == 0:
+        abort("Error: Cannot find a valid package: {0}\n".format(arg))
+    try:
+        main_release = releases[0]
+        data = client.release_data(arg, main_release)
+    except:
+        abort("Error: Cannot get package release data: {0}\n".format(arg))
 
-main_release = releases[0]
-data    = client.release_data(argv[1], main_release)
-name    = data['name'].lower()
-klass   = "".join(map(str.capitalize, re.findall('[a-zA-Z0-9]+', data['name'])))
+    packages.append("['{0}', '{1}']".format(data['name'], data['version']))
+    if name is None:
+        name = data['name'].lower()
+        version = data['version']
+        url = data['download_url']
+        homepage = data['home_page']
 
-filename = "%s/%s.rb" % (tempfile.gettempdir(), name)
-f = open(filename, 'w')
+if name is None:
+    abort("Usage: brew pip [--option] <name> [dependency ...])\n")
 
-formula_contents = """
+klass = ''.join(map(str.capitalize, re.findall('[a-zA-Z0-9]+', name)))
+formula = os.path.join(tempfile.gettempdir(), 'python-{0}.rb'.format(name))
+formula_contents = '''
 require 'formula'
 
-class PipDownloadStrategy < AbstractDownloadStrategy
+class NopDownloadStrategy < AbstractDownloadStrategy
   def fetch; Pathname.new ''; end
   def stage; Pathname.new ''; end
   def cached_location; Pathname.new ''; end
 end
 
-class PipFormula < Formula
-  def install
-    system "pip", "install", "#{name}==#{version}",
-      "--install-option=--prefix=#{prefix}"
+class PipInstalled < Requirement
+  fatal true
+
+  satisfy do
+    which 'bundle'
+  end
+
+  def message; <<-EOS.undent
+    pip is required to install.
+
+    You can install it with:
+      easy_install pip
+
+    You can read more about pip at:
+      http://www.pip-installer.org/en/latest/
+    EOS
   end
 end
 
-class %(klass)s < PipFormula
-  url "%(url)s", :using => PipDownloadStrategy
-  version "%(version)s"
-  homepage "%(homepage)s"
-  env :userpaths
+class VirtualenvInstalled < Requirement
+  fatal true
+
+  satisfy do
+    which 'virtualenv'
+  end
+
+  def message; <<-EOS.undent
+    virtualenv is required to install.
+
+    You can install it with:
+      pip install virtualenv
+
+    You can read more about virtualenv at:
+      http://www.virtualenv.org/en/latest/
+    EOS
+  end
 end
-""".strip() % {'klass': klass, 'url': data['download_url'], 'homepage': data['home_page'], 'version': data['version']}
 
-f.write(formula_contents+"\n")
-f.close()
+class Python{klass} < Formula
+  url '{url}', :using => NopDownloadStrategy
+  homepage '{homepage}'
+  version '{version}'
 
-verbose_switch = ""
-if verbose:
-    verbose_switch = "-v"
-    print "Formula is:"
-    print formula_contents
+  depends_on PipInstalled
+  depends_on VirtualenvInstalled
 
+  def install
+    Dir.chdir prefix
 
-os.system("brew install %s %s" % (verbose_switch, filename))
-os.remove(filename)
+    environment = File.join libexec, name
+    pip = File.join environment, 'bin', 'pip'
+
+    open('requirements.txt', 'w') do |f|
+      [{packages}].each do |p|
+        f.puts "#{{p.first}}==#{{p.last}}"
+      end
+    end
+
+    system 'virtualenv', environment
+    system pip, 'install', '-r', 'requirements.txt'
+    system 'virtualenv', '--relocatable', environment
+
+    bin.mkpath
+    `#{{pip}} show -f {name}`.lines.each do |l|
+      next unless l =~ /\/bin\//
+      f = File.basename(l.strip)
+      File.symlink(File.join(environment, 'bin', f), File.join(bin, f))
+    end
+  end
+end
+'''.strip().format(
+    klass=klass,
+    url=url,
+    homepage=homepage,
+    version=version,
+    name=name,
+    packages=', '.join(packages))
+
+try:
+    f = open(formula, 'w')
+    f.write("{0}\n".format(formula_contents))
+except IOError:
+    abort("Error: Cannot write formula: {0}\n".format(formula))
+finally:
+    f.close()
+
+os.system('brew install --env=std {0} {1}'.format(' '.join(options), formula))
+os.remove(formula)
