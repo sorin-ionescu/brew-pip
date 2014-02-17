@@ -49,7 +49,7 @@ for arg in sys.argv[1:]:
         homepage = data['home_page']
 
 if name is None:
-    abort("Usage: brew pip [--option] <name> [dependency ...])\n")
+    abort("Usage: brew python [--option] <name> [dependency ...])\n")
 
 klass = ''.join(map(str.capitalize, re.findall('[a-zA-Z0-9]+', name)))
 formula = os.path.join(tempfile.gettempdir(), 'python-{0}.rb'.format(name))
